@@ -1,0 +1,10 @@
+transformers
+torch
+langchain
+langgraph
+huggingface_hub
+reportlab
+graphviz
+pydantic
+python-dotenv
+
