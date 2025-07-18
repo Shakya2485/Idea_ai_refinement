@@ -13,7 +13,10 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain.agents import initialize_agent, Tool
 from langchain_core.runnables import RunnableLambda
 from langchain.embeddings import HuggingFaceEmbeddings
+from langgraph.graph import StateGraphExecutor
 from langgraph.graph import StateGraph, END
+from graphviz import Digraph
+from IPython.display import Image, display
 from pydantic import BaseModel
 from IPython.display import Image
 import graphviz
@@ -128,72 +131,108 @@ class RefineState(BaseModel):
     original_idea: str
     previous_refinement: str = ""
     refined_output: str = ""
+    critique_score: float = 0.0
 
 def refine_node(state: RefineState) -> RefineState:
     output = refine_idea_with_rag(state.original_idea, state.previous_refinement)
     return RefineState(
         original_idea=state.original_idea,
         previous_refinement=state.previous_refinement,
-        refined_output=output
+        refined_output=output,
+        critique_score=state.critique_score  # carry over
     )
 
-# def decision_condition(state: RefineState):
-#     return choice(["refine", "end"])  # could be manual or quality based
+def critique_node(state: RefineState) -> RefineState:
+    critique = critique_refinement(state.refined_output)
+    match = re.search(r"\b(\d+)\b", critique)
+    score = int(match.group(1)) if match else 0
 
+    return RefineState(
+        original_idea=state.original_idea,
+        previous_refinement=state.previous_refinement,
+        refined_output=state.refined_output,
+        critique_score=score
+    )
 
 def decision_condition(state: RefineState):
-    critique = critique_refinement(state.refined_output)
-
-    # Extract the first integer score found in the critique response
-    match = re.search(r"\b(\d+)\b", critique)
-    critique_score = int(match.group(1)) if match else 0
-
-    # Decision logic based on score threshold
-    if critique_score < 8:
-        return "refine"
-    else:
-        return "end"
+    return "refine" if state.critique_score < 8 else "end"
 
 
-# 10. LangGraph Build
+
+# 10. LangGraph Build (Updated)
 builder = StateGraph(RefineState)
+
+# Add nodes
 builder.add_node("refine", RunnableLambda(refine_node))
-builder.add_node("decide", RunnableLambda(lambda x: x))
+builder.add_node("critique", RunnableLambda(critique_node))
+builder.add_node("decide", RunnableLambda(lambda x: x))  # just passes state through
+
+# Define entry point
 builder.set_entry_point("refine")
-builder.add_edge("refine", "decide")
+
+# Define edges
+builder.add_edge("refine", "critique")     # First refine the idea
+builder.add_edge("critique", "decide")     # Then critique it
+
+# Conditional branching from "decide"
 builder.add_conditional_edges(
     "decide",
-    RunnableLambda(decision_condition),
+    RunnableLambda(decision_condition),    # Uses score in state
     {
-        "refine": "refine",
-        "end": END
+        "refine": "refine",                # Loop back if score < 8
+        "end": END                         # Exit if score >= 8
     }
 )
 
+
 # 11. Visualize LangGraph
-viz = graphviz.Digraph()
+
+viz = Digraph()
 viz.attr(rankdir="LR")
+
+# Nodes
 viz.node("Start")
 viz.node("Refine")
+viz.node("Critique")
 viz.node("Decide")
 viz.node("End")
+
+# Edges
 viz.edge("Start", "Refine")
-viz.edge("Refine", "Decide")
-viz.edge("Decide", "Refine", label="yes")
-viz.edge("Decide", "End", label="no")
+viz.edge("Refine", "Critique")
+viz.edge("Critique", "Decide")
+viz.edge("Decide", "Refine", label="score < 8")
+viz.edge("Decide", "End", label="score ≥ 8")
+
+# Render
 viz.render("refinement_graph", format="png", cleanup=True)
 display(Image(filename="refinement_graph.png"))
 
-# 12. Run Loop
-idea = input("Enter your startup idea: ")
-refined = refine_idea_with_rag(idea)
-print("\nFirst Refinement:\n", refined)
-print("\nCritique:\n", critique_refinement(refined))
 
-while input("\nRefine again? (yes/no): ").strip().lower() == "yes":
-    refined = refine_idea_with_rag(idea, previous_refinement=refined)
-    print("\nNext Refinement:\n", refined)
-    print("\nCritique:\n", critique_refinement(refined))
+# # 12. Run Loop
+# idea = input("Enter your startup idea: ")
+# refined = refine_idea_with_rag(idea)
+# print("\nFirst Refinement:\n", refined)
+# print("\nCritique:\n", critique_refinement(refined))
+
+# while input("\nRefine again? (yes/no): ").strip().lower() == "yes":
+#     refined = refine_idea_with_rag(idea, previous_refinement=refined)
+#     print("\nNext Refinement:\n", refined)
+#     print("\nCritique:\n", critique_refinement(refined))
+
+# 12. Run LangGraph Execution Loop Automatically
+# Create graph executor from builder
+graph = builder.compile()
+
+# Provide initial state
+initial_state = RefineState(original_idea=input("Enter your startup idea: "))
+
+# Run the graph — it will handle refinement, critique, and decision
+final_state = graph.invoke(initial_state)
+
+# Print result
+print("\nFinal Output:\n", final_state.refined_output)
+
 
 # 13. Export PDF
 def export_to_pdf(filename="refined_idea.pdf"):
