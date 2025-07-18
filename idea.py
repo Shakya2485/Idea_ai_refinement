@@ -1,5 +1,6 @@
 # 1. Import necessary libraries
 import os
+import re
 import torch
 import datetime
 import numpy as np
@@ -40,7 +41,8 @@ def generate_response(prompt_text):
     outputs = model.generate(
         **inputs,
         max_new_tokens=512,
-        top_k=50,
+        top_p=0.8,
+        temperature = 0.6,
         repetition_penalty=1.1,
         do_sample=True,
         pad_token_id=tokenizer.eos_token_id
@@ -53,7 +55,7 @@ documents = [
     "AI in healthcare is revolutionizing diagnostics and treatment planning.",
     "Startups in fintech are raising massive amounts of funding, focusing on digital payments."
 ]
-
+# documents added for example, It's for Retrieval during generation
 embedding_model = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
@@ -74,7 +76,7 @@ Context:
 
 1. Search the market for similar solutions.
 2. Identify gaps, risks, or missed opportunities.
-3. Suggest creative improvements, pivots, or refinements.
+3. Suggest creative improvements, pivots, or refinements. 
 
 Respond with a structured improvement plan.
 """
@@ -135,8 +137,23 @@ def refine_node(state: RefineState) -> RefineState:
         refined_output=output
     )
 
+# def decision_condition(state: RefineState):
+#     return choice(["refine", "end"])  # could be manual or quality based
+
+
 def decision_condition(state: RefineState):
-    return choice(["refine", "end"])  # could be manual or quality based
+    critique = critique_refinement(state.refined_output)
+
+    # Extract the first integer score found in the critique response
+    match = re.search(r"\b(\d+)\b", critique)
+    critique_score = int(match.group(1)) if match else 0
+
+    # Decision logic based on score threshold
+    if critique_score < 8:
+        return "refine"
+    else:
+        return "end"
+
 
 # 10. LangGraph Build
 builder = StateGraph(RefineState)
